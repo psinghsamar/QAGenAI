@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import {
   Box,
@@ -16,6 +16,7 @@ import {
   Alert,
   Snackbar
 } from '@mui/material';
+import StopIcon from '@mui/icons-material/Stop';
 
 const TestCaseGenerator = () => {
   const [activeTab, setActiveTab] = useState(0);
@@ -27,6 +28,7 @@ const TestCaseGenerator = () => {
   const [loading, setLoading] = useState(false);
   const [testCases, setTestCases] = useState(null);
   const [error, setError] = useState(null);
+  const [isRecording, setIsRecording] = useState(false);
 
   const handleTabChange = (event, newValue) => {
     setActiveTab(newValue);
@@ -77,15 +79,20 @@ const TestCaseGenerator = () => {
   const handleExport = async () => {
     try {
       setLoading(true);
-      console.log('Starting export with format:', exportFormat);
-      console.log('Test cases to export:', testCases);
+      setError(null);
 
-      if (!testCases || testCases.length === 0) {
+      // Validate test cases before export
+      if (!testCases || !Array.isArray(testCases) || testCases.length === 0) {
         throw new Error('No test cases available to export');
       }
 
+      console.log('Exporting test cases:', {
+        count: testCases.length,
+        format: exportFormat
+      });
+
       const response = await axios.post('/api/export-tests', {
-        testCases,
+        testCases: testCases,
         format: exportFormat
       }, {
         responseType: 'blob',
@@ -94,15 +101,14 @@ const TestCaseGenerator = () => {
         }
       });
 
-      console.log('Export response received:', response);
-
-      // Create download link
+      // Create and trigger download
       const blob = new Blob([response.data], { 
-        type: response.headers['content-type'] || 'application/octet-stream'
+        type: response.headers['content-type'] 
       });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
-      const fileName = `test-cases.${exportFormat.toLowerCase()}`;
+      const fileName = response.headers['content-disposition']?.split('filename=')[1] || 
+                      `test-cases.${exportFormat.toLowerCase()}`;
 
       link.href = url;
       link.setAttribute('download', fileName);
@@ -111,29 +117,10 @@ const TestCaseGenerator = () => {
       link.remove();
       window.URL.revokeObjectURL(url);
 
-      setError(null); // Clear any existing errors
+      setError(null);
     } catch (error) {
-      console.error('Detailed export error:', error);
-      console.error('Error response:', error.response);
-      
-      let errorMessage = 'Error exporting test cases. ';
-      
-      if (error.response?.data instanceof Blob) {
-        // Try to read the error message from the blob
-        const reader = new FileReader();
-        reader.onload = () => {
-          try {
-            const errorData = JSON.parse(reader.result);
-            setError(errorData.message || 'Unknown error occurred');
-          } catch (e) {
-            setError('Error exporting test cases. Please try again.');
-          }
-        };
-        reader.readAsText(error.response.data);
-      } else {
-        errorMessage += error.response?.data?.message || error.message || 'Please try again.';
-        setError(errorMessage);
-      }
+      console.error('Export error:', error);
+      setError(error.response?.data?.message || 'Error exporting test cases. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -150,6 +137,55 @@ const TestCaseGenerator = () => {
     }
     return true;
   };
+
+  const handleUrlGeneration = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      setTestCases(null);
+
+      if (!url) {
+        throw new Error('Please enter a URL');
+      }
+
+      setIsRecording(true);
+
+      const response = await axios.post('/api/generate-tests/url', {
+        url,
+        username,
+        password
+      });
+
+      if (response.data.error) {
+        throw new Error(response.data.message);
+      }
+
+    } catch (error) {
+      console.error('Error:', error);
+      setError(error.response?.data?.message || error.message);
+      setIsRecording(false);
+    }
+  };
+
+  const handleStopRecording = async () => {
+    try {
+      const response = await axios.post('/api/stop-recording');
+      setTestCases(response.data);
+    } catch (error) {
+      console.error('Error stopping recording:', error);
+      setError(error.response?.data?.message || 'Error stopping recording');
+    } finally {
+      setIsRecording(false);
+      setLoading(false);
+    }
+  };
+
+  // Add this to your component to debug test cases
+  useEffect(() => {
+    if (testCases) {
+      console.log('Current test cases:', testCases);
+    }
+  }, [testCases]);
 
   return (
     <Box sx={{ maxWidth: 800, margin: 'auto', padding: 3 }}>
@@ -209,14 +245,32 @@ const TestCaseGenerator = () => {
             </Box>
           )}
 
-          <Button
-            variant="contained"
-            onClick={handleSubmit}
-            disabled={loading || (activeTab === 0 && !file) || (activeTab === 1 && !url)}
-            sx={{ mt: 3 }}
-          >
-            {loading ? <CircularProgress size={24} /> : 'Generate Test Cases'}
-          </Button>
+          <Box sx={{ mt: 3, display: 'flex', gap: 2 }}>
+            {!isRecording ? (
+              <Button
+                variant="contained"
+                onClick={activeTab === 0 ? handleSubmit : handleUrlGeneration}
+                disabled={loading || (activeTab === 0 && !file) || (activeTab === 1 && !url)}
+              >
+                {loading ? <CircularProgress size={24} /> : 'Generate Test Cases'}
+              </Button>
+            ) : (
+              <Button
+                variant="contained"
+                color="error"
+                onClick={handleStopRecording}
+                startIcon={<StopIcon />}
+              >
+                Stop Recording
+              </Button>
+            )}
+          </Box>
+
+          {isRecording && (
+            <Alert severity="info" sx={{ mt: 2 }}>
+              Recording in progress... Click "Stop Recording" or close the browser window to generate test cases.
+            </Alert>
+          )}
         </Box>
       </Card>
 

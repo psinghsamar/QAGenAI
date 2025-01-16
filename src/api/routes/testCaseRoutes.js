@@ -93,29 +93,60 @@ router.post('/generate-tests/file', (req, res) => {
 router.post('/generate-tests/url', async (req, res) => {
   try {
     const { url, username, password } = req.body;
-
+    
     if (!url) {
-      return res.status(400).json({
-        error: true,
-        message: 'URL is required'
-      });
-    }
-
-    // Validate URL format
-    try {
-      new URL(url);
-    } catch (e) {
-      return res.status(400).json({
-        error: true,
-        message: 'Invalid URL format'
-      });
+      throw new Error('URL is required');
     }
 
     const generator = new TestCaseGenerator();
-    const testCases = await generator.generateFromURL(url, { username, password });
+    req.app.locals.generator = generator; // Store generator instance
+
+    await generator.initialize();
+    await generator.startRecording(url, { 
+      username, 
+      password,
+      onComplete: (testCases) => {
+        // Store test cases for later retrieval
+        req.app.locals.lastGeneratedTests = testCases;
+      }
+    });
+
+    res.json({ status: 'recording' });
+  } catch (error) {
+    console.error('URL test generation error:', error);
+    res.status(500).json({
+      error: true,
+      message: error.message || 'Failed to generate tests from URL'
+    });
+  }
+});
+
+// Add a new route to handle recording stop
+router.post('/stop-recording', async (req, res) => {
+  try {
+    const generator = req.app.locals.generator;
+    if (!generator) {
+      throw new Error('No active recording session found');
+    }
+
+    const testCases = await generator.stopRecording();
+    
+    // Validate generated test cases
+    if (!testCases || !Array.isArray(testCases) || testCases.length === 0) {
+      throw new Error('No valid test cases were generated');
+    }
+
+    // Store valid test cases
+    req.app.locals.lastGeneratedTests = testCases;
+    req.app.locals.generator = null;
+
     res.json(testCases);
   } catch (error) {
-    handleError(error, res);
+    console.error('Stop recording error:', error);
+    res.status(500).json({
+      error: true,
+      message: error.message || 'Failed to stop recording'
+    });
   }
 });
 
@@ -144,42 +175,43 @@ async function validateFileContent(content, type) {
 // Export test cases
 router.post('/export-tests', async (req, res) => {
   try {
-    console.log('Received export request:', {
-      format: req.body.format,
-      testCasesCount: req.body.testCases?.length
-    });
-
+    console.log('Export request received:', req.body);
     const { testCases, format } = req.body;
     
-    if (!testCases || !Array.isArray(testCases)) {
-      throw new Error('Invalid test cases data');
+    // Validate test cases
+    if (!testCases || !Array.isArray(testCases) || testCases.length === 0) {
+      console.error('Invalid test cases:', testCases);
+      throw new Error('Invalid or empty test cases data');
     }
 
-    if (!format) {
-      throw new Error('Export format not specified');
+    // Validate format
+    if (!format || !['json', 'csv', 'xlsx'].includes(format.toLowerCase())) {
+      throw new Error('Invalid export format. Supported formats: json, csv, xlsx');
     }
 
-    console.log('Attempting to export with format:', format);
-    
     const exportService = new ExportService();
     const buffer = await exportService.export(testCases, format);
     
-    console.log('Export successful, buffer size:', buffer.length);
+    // Log successful export
+    console.log(`Successfully exported ${testCases.length} test cases to ${format}`);
 
+    // Set appropriate headers
     const contentType = exportService.getContentType(format);
     const fileName = exportService.getFileName(format);
-
+    
     res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
     res.send(buffer);
   } catch (error) {
-    console.error('Detailed export error:', error);
-    
-    // Send error response in JSON format
-    res.status(500).json({
+    console.error('Export error details:', {
+      message: error.message,
+      stack: error.stack,
+      body: req.body
+    });
+
+    res.status(400).json({
       error: true,
-      message: `Export failed: ${error.message || 'Unknown error'}`,
-      details: error.stack
+      message: `Export failed: ${error.message}`
     });
   }
 });
